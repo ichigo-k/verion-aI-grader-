@@ -10,12 +10,12 @@ Bedrock invocation per answer, score computation, and database persistence.
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 from django.conf import settings
 from django.http import Http404
 
 from grader.bedrock import BedrockClient, BedrockGradingError
-from grader.grading_scale import GradingScale
 from grader.models import (
     AnswerFeedback,
     Assessment,
@@ -56,7 +56,6 @@ class SingleGradingResult:
 
     attempt_id: int
     score: float
-    grade: str
     plagiarism_flagged: bool
     answer_feedbacks: list[AnswerFeedbackResult] = field(default_factory=list)
     error_notes: str = ""
@@ -297,8 +296,8 @@ class GraderService:
                     defaults={
                         "assessment_id": attempt.assessment_id,
                         "score": 0.0,
-                        "grade": "F",
                         "plagiarism_flagged": attempt.id in flagged_attempts,
+                        "graded_at": datetime.now(tz=timezone.utc),
                         "error_notes": error_msg,
                     },
                 )
@@ -309,7 +308,6 @@ class GraderService:
             return SingleGradingResult(
                 attempt_id=attempt.id,
                 score=0.0,
-                grade="F",
                 plagiarism_flagged=attempt.id in flagged_attempts,
                 error_notes=error_msg,
             )
@@ -455,16 +453,12 @@ class GraderService:
             assessment_total_marks,
         )
 
-        # Step 6: Compute grade
-        grade = GradingScale.compute_grade(final_score, assessment_total_marks)
-
-        # Step 7: Check plagiarism flag
+        # Step 6: Check plagiarism flag
         plagiarism_flagged = attempt.id in flagged_attempts
 
-        # Step 8: Update attempt score and grade
+        # Step 8: Update attempt score only (grade is computed on read by the main system)
         AssessmentAttempt.objects.filter(id=attempt.id).update(
             score=final_score,
-            grade=grade,
         )
 
         # Step 9: Persist GradingResult
@@ -474,8 +468,8 @@ class GraderService:
             defaults={
                 "assessment_id": attempt.assessment_id,
                 "score": final_score,
-                "grade": grade,
                 "plagiarism_flagged": plagiarism_flagged,
+                "graded_at": datetime.now(tz=timezone.utc),
                 "error_notes": error_notes,
             },
         )
@@ -502,7 +496,6 @@ class GraderService:
         return SingleGradingResult(
             attempt_id=attempt.id,
             score=final_score,
-            grade=grade,
             plagiarism_flagged=plagiarism_flagged,
             answer_feedbacks=feedbacks,
             error_notes=error_notes,

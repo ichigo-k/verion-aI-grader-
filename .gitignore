@@ -37,7 +37,6 @@ ENV/
 
 # uv
 .uv/
-uv.lock
 
 # ---------------------------------------------------------------------------
 # Environment / secrets
@@ -53,6 +52,7 @@ uv.lock
 local_settings.py
 db.sqlite3
 db.sqlite3-journal
+django_system.db
 media/
 staticfiles/
 static/
@@ -103,3 +103,4 @@ Thumbs.db
 
 
 .kiro/
+AGENTS.md

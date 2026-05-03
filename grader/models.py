@@ -30,6 +30,7 @@ class Assessment(models.Model):
 class AssessmentSection(models.Model):
     id = models.IntegerField(primary_key=True)
     assessment_id = models.IntegerField(db_column='assessmentId')
+    name = models.CharField(max_length=255)
     type = models.CharField(max_length=20)  # 'SUBJECTIVE' | 'OBJECTIVE'
 
     class Meta:
@@ -46,7 +47,8 @@ class AssessmentAttempt(models.Model):
     student_id = models.IntegerField(db_column='studentId')
     status = models.CharField(max_length=20)
     score = models.FloatField(null=True, blank=True)
-    grade = models.CharField(max_length=10, null=True, blank=True)
+    # NOTE: grade column was dropped — grade letters are computed on read
+    # by the main system from system_settings.gradingScale. Do not add it back.
 
     class Meta:
         managed = False
@@ -104,19 +106,25 @@ class StudentAnswer(models.Model):
 
 
 # ---------------------------------------------------------------------------
-# Grader-managed models
-# These tables are owned by this service and managed via Django migrations.
+# Grader-owned models — managed=False
+# These tables are created and migrated by Prisma (ai-powered-grading-system).
+# Django reads and writes them but NEVER runs CREATE/ALTER/DROP against them.
 # ---------------------------------------------------------------------------
 
 class GradingResult(models.Model):
-    """One row per graded attempt. Stores the computed score and grade."""
-    attempt_id = models.IntegerField(unique=True, db_index=True)
-    assessment_id = models.IntegerField(db_index=True)
+    """One row per graded attempt. Stores the computed score and audit info."""
+    attempt_id = models.IntegerField(unique=True, db_index=True, db_column='attemptId')
+    assessment_id = models.IntegerField(db_index=True, db_column='assessmentId')
     score = models.FloatField()
-    grade = models.CharField(max_length=10)
-    plagiarism_flagged = models.BooleanField(default=False)
-    graded_at = models.DateTimeField(auto_now_add=True)
-    error_notes = models.TextField(blank=True, default='')
+    # grade is intentionally NOT stored — computed on read by the main system
+    # from system_settings.gradingScale so it always reflects the current scale.
+    plagiarism_flagged = models.BooleanField(default=False, db_column='plagiarismFlagged')
+    graded_at = models.DateTimeField(db_column='gradedAt')
+    error_notes = models.TextField(blank=True, default='', db_column='errorNotes')
+
+    class Meta:
+        managed = False
+        db_table = 'grader_gradingresult'
 
     def __str__(self) -> str:
         return f"GradingResult(attempt_id={self.attempt_id}, grade={self.grade!r})"
@@ -128,15 +136,20 @@ class AnswerFeedback(models.Model):
         GradingResult,
         on_delete=models.CASCADE,
         related_name='answer_feedbacks',
+        db_column='gradingResultId',
     )
-    question_id = models.IntegerField(db_index=True)
-    total_score = models.FloatField()
-    max_score = models.FloatField()
+    question_id = models.IntegerField(db_index=True, db_column='questionId')
+    total_score = models.FloatField(db_column='totalScore')
+    max_score = models.FloatField(db_column='maxScore')
     flag = models.CharField(max_length=30, blank=True, default='')
-    flag_reason = models.TextField(blank=True, default='')
+    flag_reason = models.TextField(blank=True, default='', db_column='flagReason')
     # JSON: list of {criterion, awarded, max, justification}
-    criteria_feedback = models.JSONField(default=list)
-    bedrock_error = models.BooleanField(default=False)
+    criteria_feedback = models.JSONField(default=list, db_column='criteriaFeedback')
+    bedrock_error = models.BooleanField(default=False, db_column='bedrockError')
+
+    class Meta:
+        managed = False
+        db_table = 'grader_answerfeedback'
 
     def __str__(self) -> str:
         return f"AnswerFeedback(question_id={self.question_id}, score={self.total_score}/{self.max_score})"

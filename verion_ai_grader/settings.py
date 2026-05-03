@@ -34,6 +34,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # ---------------------------------------------------------------------------
 
 DATABASE_URL = _require_env('DATABASE_URL')
+DJANGO_DB_URL = os.environ.get('DJANGO_DB_URL')  # optional — falls back to SQLite
 AWS_ACCESS_KEY_ID = _require_env('AWS_ACCESS_KEY_ID')
 AWS_SECRET_ACCESS_KEY = _require_env('AWS_SECRET_ACCESS_KEY')
 AWS_REGION = _require_env('AWS_REGION')
@@ -62,7 +63,10 @@ else:
 INSTALLED_APPS = [
     'django.contrib.contenttypes',
     'django.contrib.auth',
+    'django.contrib.staticfiles',
     'rest_framework',
+    'drf_spectacular',
+    'drf_spectacular_sidecar',
     'grader',
     'auth_keys',
 ]
@@ -93,12 +97,32 @@ TEMPLATES = [
 WSGI_APPLICATION = 'verion_ai_grader.wsgi.application'
 
 # ---------------------------------------------------------------------------
-# Database (task 1.5)
+# Database (split routing)
+# ---------------------------------------------------------------------------
+# default  → Django system DB: holds auth_*, contenttypes, auth_keys_apikey,
+#            and django_migrations for those apps. Never touches the shared DB.
+#            Defaults to a local SQLite file. Set DJANGO_DB_URL to use Postgres
+#            (e.g. a separate schema or database in production).
+# neon     → Shared PostgreSQL: grader app tables only (grader_gradingresult,
+#            grader_answerfeedback). All managed=False models are also read/
+#            written here but Django never runs migrations against them.
 # ---------------------------------------------------------------------------
 
+_django_db: dict
+if DJANGO_DB_URL:
+    _django_db = dj_database_url.parse(DJANGO_DB_URL, conn_max_age=600)
+else:
+    _django_db = {
+        'ENGINE': 'django.db.backends.sqlite3',
+        'NAME': BASE_DIR / 'django_system.db',
+    }
+
 DATABASES = {
-    'default': dj_database_url.config(default=DATABASE_URL, conn_max_age=600)
+    'default': _django_db,
+    'neon': dj_database_url.config(default=DATABASE_URL, conn_max_age=600),
 }
+
+DATABASE_ROUTERS = ['grader.db_router.GraderRouter']
 
 # ---------------------------------------------------------------------------
 # Django REST Framework (task 1.6)
@@ -111,6 +135,22 @@ REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.IsAuthenticated',
     ],
+    'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
+}
+
+SPECTACULAR_SETTINGS = {
+    'TITLE': 'Verion AI Grader',
+    'DESCRIPTION': (
+        'AI grading microservice for the ai-powered-grading-system. '
+        'Grades subjective answers using AWS Bedrock, detects plagiarism via '
+        'answer hash comparison, and writes final scores back to the shared database.'
+    ),
+    'VERSION': '1.0.0',
+    'SERVE_INCLUDE_SCHEMA': False,
+    # Use self-hosted Swagger/Redoc assets (no CDN dependency)
+    'SWAGGER_UI_DIST': 'SIDECAR',
+    'SWAGGER_UI_FAVICON_HREF': 'SIDECAR',
+    'REDOC_DIST': 'SIDECAR',
 }
 
 # ---------------------------------------------------------------------------
@@ -123,6 +163,13 @@ USE_I18N = True
 USE_TZ = True
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+# ---------------------------------------------------------------------------
+# Static files
+# ---------------------------------------------------------------------------
+
+STATIC_URL = '/static/'
+STATIC_ROOT = BASE_DIR / 'staticfiles'
 
 # ---------------------------------------------------------------------------
 # Optional environment variables with validation

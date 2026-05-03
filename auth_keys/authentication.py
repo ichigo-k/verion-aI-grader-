@@ -1,5 +1,6 @@
 import hashlib
 
+from drf_spectacular.extensions import OpenApiAuthenticationExtension
 from rest_framework.authentication import BaseAuthentication
 from rest_framework.exceptions import AuthenticationFailed
 
@@ -30,3 +31,17 @@ class ApiKeyAuthentication(BaseAuthentication):
 
     def authenticate_header(self, request) -> str:
         return 'X-API-Key'
+
+
+class ApiKeyAuthenticationExtension(OpenApiAuthenticationExtension):
+    """Tells drf-spectacular how to document ApiKeyAuthentication in OpenAPI."""
+
+    target_class = 'auth_keys.authentication.ApiKeyAuthentication'
+    name = 'ApiKeyAuth'
+
+    def get_security_definition(self, auto_schema):
+        return {
+            'type': 'apiKey',
+            'in': 'header',
+            'name': 'X-API-Key',
+        }

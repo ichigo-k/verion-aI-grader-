@@ -8,11 +8,13 @@ POST /api/grade/attempt/{attempt_id}/        — grade a single attempt
 import logging
 
 from django.http import Http404
+from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_schema
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from grader.serializers import BatchGradingResultSerializer, SingleGradingResultSerializer
+
 from grader.services import GraderService
 
 logger = logging.getLogger(__name__)
@@ -26,6 +28,33 @@ class AssessmentGradeView(APIView):
     Returns a summary with graded_count, grading_status, and plagiarism_flags.
     """
 
+    @extend_schema(
+        summary="Batch grade an assessment",
+        description=(
+            "Grades all SUBMITTED and TIMED_OUT attempts for the given assessment concurrently. "
+            "Runs plagiarism detection across all answer hashes before grading. "
+            "Adds subjective scores to the existing MCQ score on each attempt, "
+            "writes the final score back to `assessment_attempts.score`, "
+            "and sets `assessments.gradingStatus = GRADED`."
+        ),
+        request=None,
+        parameters=[
+            OpenApiParameter(
+                name="assessment_id",
+                location=OpenApiParameter.PATH,
+                description="Primary key of the assessment to grade.",
+                required=True,
+                type=int,
+            )
+        ],
+        responses={
+            200: BatchGradingResultSerializer,
+            401: OpenApiResponse(description="Missing or invalid X-API-Key header."),
+            404: OpenApiResponse(description="Assessment not found."),
+            500: OpenApiResponse(description="Unexpected internal error."),
+        },
+        tags=["Grading"],
+    )
     def post(self, request: Request, assessment_id: int) -> Response:
         service = GraderService()
         try:
@@ -47,6 +76,32 @@ class AttemptGradeView(APIView):
     Grades a single attempt and returns per-answer feedback.
     """
 
+    @extend_schema(
+        summary="Grade a single attempt",
+        description=(
+            "Grades a single attempt on demand. Useful for re-grading or targeted grading. "
+            "Runs plagiarism detection against other attempts for the same assessment, "
+            "calls AWS Bedrock per subjective answer, and writes the final score back to "
+            "`assessment_attempts.score`."
+        ),
+        request=None,
+        parameters=[
+            OpenApiParameter(
+                name="attempt_id",
+                location=OpenApiParameter.PATH,
+                description="Primary key of the attempt to grade.",
+                required=True,
+                type=int,
+            )
+        ],
+        responses={
+            200: SingleGradingResultSerializer,
+            401: OpenApiResponse(description="Missing or invalid X-API-Key header."),
+            404: OpenApiResponse(description="Attempt not found."),
+            500: OpenApiResponse(description="Unexpected internal error."),
+        },
+        tags=["Grading"],
+    )
     def post(self, request: Request, attempt_id: int) -> Response:
         service = GraderService()
         try:

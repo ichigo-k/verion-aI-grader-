@@ -37,7 +37,6 @@ class BatchGradingResultSerializer(serializers.Serializer):
 class SingleGradingResultSerializer(serializers.Serializer):
     attempt_id = serializers.IntegerField()
     score = serializers.FloatField()
-    grade = serializers.CharField()
     plagiarism_flagged = serializers.BooleanField()
     answer_feedbacks = AnswerFeedbackSerializer(many=True)
     error_notes = serializers.CharField(allow_blank=True)
