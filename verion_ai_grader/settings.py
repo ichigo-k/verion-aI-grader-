@@ -2,7 +2,6 @@
 Django settings for verion_ai_grader project.
 """
 
-import json
 import os
 from pathlib import Path
 
@@ -174,15 +173,6 @@ STATIC_ROOT = BASE_DIR / 'staticfiles'
 # ---------------------------------------------------------------------------
 # Optional environment variables with validation
 # ---------------------------------------------------------------------------
-
-# GRADING_SCALE — JSON string, e.g. '{"A": 70, "B": 60, "C": 50, "D": 40}'
-_grading_scale_raw = os.environ.get('GRADING_SCALE', '{"A": 70, "B": 60, "C": 50, "D": 40}')
-try:
-    GRADING_SCALE: dict = json.loads(_grading_scale_raw)
-except json.JSONDecodeError as exc:
-    raise ImproperlyConfigured(
-        f"Environment variable 'GRADING_SCALE' is not valid JSON: {exc}"
-    ) from exc
 
 # BEDROCK_MAX_TOKENS — integer, default 2048
 _bedrock_max_tokens_raw = os.environ.get('BEDROCK_MAX_TOKENS', '2048')
