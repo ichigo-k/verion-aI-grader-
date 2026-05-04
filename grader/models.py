@@ -105,11 +105,7 @@ class StudentAnswer(models.Model):
         return f"StudentAnswer(id={self.id}, question_id={self.question_id})"
 
 
-# ---------------------------------------------------------------------------
-# Grader-owned models — managed=False
-# These tables are created and migrated by Prisma (ai-powered-grading-system).
-# Django reads and writes them but NEVER runs CREATE/ALTER/DROP against them.
-# ---------------------------------------------------------------------------
+
 
 class GradingResult(models.Model):
     """One row per graded attempt. Stores the computed score and audit info."""
@@ -127,7 +123,7 @@ class GradingResult(models.Model):
         db_table = 'grader_gradingresult'
 
     def __str__(self) -> str:
-        return f"GradingResult(attempt_id={self.attempt_id}, grade={self.grade!r})"
+        return f"GradingResult(attempt_id={self.attempt_id}, score={self.score})"
 
 
 class AnswerFeedback(models.Model):
