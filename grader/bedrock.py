@@ -13,6 +13,7 @@ or timeout errors. A second failure raises BedrockGradingError.
 import json
 import logging
 import time
+import re
 from dataclasses import dataclass, field
 
 import boto3
@@ -75,7 +76,7 @@ class BedrockClient:
 
     Usage:
         client = BedrockClient(
-            model_id="anthropic.claude-3-sonnet-20240229-v1:0",
+            model_id="amazon.nova-pro-v1:0",
             max_tokens=2048,
             region="us-east-1",
         )
@@ -98,6 +99,12 @@ class BedrockClient:
         self._max_tokens = max_tokens
         self._client = boto3.client("bedrock-runtime", region_name=region)
 
+    def _is_anthropic_model(self) -> bool:
+        return self._model_id.startswith("anthropic.")
+
+    def _is_nova_model(self) -> bool:
+        return self._model_id.startswith("amazon.nova")
+
     # ---------------------------------------------------------------------------
     # Task 8.2 — Prompt construction
     # ---------------------------------------------------------------------------
@@ -115,6 +122,14 @@ class BedrockClient:
         )
         return f"""You are an academic grader. Grade the following student answer using the provided rubric.
 
+    Grading style requirements:
+    - Be fair, constructive, and human-like. Avoid harsh wording.
+    - Prioritize conceptual understanding over spelling/grammar.
+    - Treat obvious minor typos (for example: "ypertext" for "hypertext") as typos, not factual inaccuracies.
+    - Deduct only small marks for minor language mistakes when meaning is still clear.
+    - Use major deductions only for missing core concepts, incorrect logic, or off-topic content.
+    - Keep justifications specific and supportive.
+
 Question: {question_body}
 
 Rubric:
@@ -131,7 +146,12 @@ Return ONLY a JSON object with this exact structure:
   "overall_feedback": "<text>",
   "flag": "<none|suspicious|incomplete|off_topic>",
   "flag_reason": "<text or empty>"
-}}"""
+}}
+
+Important:
+- Output JSON only (no markdown, no code fences, no extra text).
+- Ensure each awarded score is an integer between 0 and the criterion max.
+"""
 
     def _build_holistic_prompt(
         self,
@@ -141,6 +161,13 @@ Return ONLY a JSON object with this exact structure:
     ) -> str:
         """Build a holistic grading prompt (no rubric)."""
         return f"""You are an academic grader. Grade the following student answer holistically.
+
+    Grading style requirements:
+    - Be fair, constructive, and human-like. Avoid harsh wording.
+    - Prioritize conceptual understanding over spelling/grammar.
+    - Treat obvious minor typos as typos, not factual inaccuracies.
+    - Deduct only small marks for minor language mistakes when meaning is clear.
+    - Use major deductions only for missing core concepts, incorrect logic, or off-topic content.
 
 Question: {question_body}
 
@@ -154,7 +181,12 @@ Return ONLY a JSON object:
   "overall_feedback": "<text>",
   "flag": "<none|suspicious|incomplete|off_topic>",
   "flag_reason": "<text or empty>"
-}}"""
+}}
+
+Important:
+- Output JSON only (no markdown, no code fences, no extra text).
+- holistic_score must be an integer between 0 and {question_marks}.
+"""
 
     # ---------------------------------------------------------------------------
     # Task 8.3 — JSON response parsing
@@ -162,13 +194,29 @@ Return ONLY a JSON object:
 
     def _parse_rubric_response(self, raw: str) -> GradeResponse:
         """Parse a rubric-guided model response into a GradeResponse."""
+        # Try to extract a JSON object if the model wrapped it in markdown
+        candidate = self._extract_json_candidate(raw)
+        if candidate is None:
+            logger.warning("Bedrock response not JSON; returning safe fallback.\nPreview: %s", raw[:200])
+            return GradeResponse(
+                criteria_scores=[],
+                holistic_score=None,
+                overall_feedback="",
+                flag="none",
+                flag_reason=f"bedrock_parse_error: could not extract JSON (preview: {raw[:200]!r})",
+            )
+
         try:
-            data = json.loads(raw)
+            data = json.loads(candidate)
         except json.JSONDecodeError as exc:
-            raise BedrockGradingError(
-                f"Failed to parse Bedrock JSON response: {exc}. "
-                f"Raw response (first 200 chars): {raw[:200]!r}"
-            ) from exc
+            logger.warning("Failed to decode extracted JSON from Bedrock response: %s", exc)
+            return GradeResponse(
+                criteria_scores=[],
+                holistic_score=None,
+                overall_feedback="",
+                flag="none",
+                flag_reason=f"bedrock_parse_error: invalid JSON after extraction (preview: {raw[:200]!r})",
+            )
 
         required_fields = {"criteria_scores", "overall_feedback", "flag", "flag_reason"}
         missing = required_fields - data.keys()
@@ -197,20 +245,39 @@ Return ONLY a JSON object:
 
     def _parse_holistic_response(self, raw: str) -> GradeResponse:
         """Parse a holistic model response into a GradeResponse."""
+        candidate = self._extract_json_candidate(raw)
+        if candidate is None:
+            logger.warning("Bedrock response not JSON; returning safe holistic fallback.\nPreview: %s", raw[:200])
+            return GradeResponse(
+                criteria_scores=[],
+                holistic_score=0,
+                overall_feedback="",
+                flag="none",
+                flag_reason=f"bedrock_parse_error: could not extract JSON (preview: {raw[:200]!r})",
+            )
+
         try:
-            data = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            raise BedrockGradingError(
-                f"Failed to parse Bedrock JSON response: {exc}. "
-                f"Raw response (first 200 chars): {raw[:200]!r}"
-            ) from exc
+            data = json.loads(candidate)
+        except json.JSONDecodeError:
+            logger.warning("Failed to decode extracted JSON from Bedrock response (holistic)")
+            return GradeResponse(
+                criteria_scores=[],
+                holistic_score=0,
+                overall_feedback="",
+                flag="none",
+                flag_reason=f"bedrock_parse_error: invalid JSON after extraction (preview: {raw[:200]!r})",
+            )
 
         required_fields = {"holistic_score", "overall_feedback", "flag", "flag_reason"}
         missing = required_fields - data.keys()
         if missing:
-            raise BedrockGradingError(
-                f"Bedrock response missing required fields: {missing}. "
-                f"Raw response (first 200 chars): {raw[:200]!r}"
+            logger.warning("Bedrock JSON missing required fields: %s", missing)
+            return GradeResponse(
+                criteria_scores=[],
+                holistic_score=int(data.get("holistic_score", 0) or 0),
+                overall_feedback=data.get("overall_feedback", ""),
+                flag=data.get("flag", "none"),
+                flag_reason=f"bedrock_parse_error: missing fields {missing} (preview: {raw[:200]!r})",
             )
 
         return GradeResponse(
@@ -219,6 +286,83 @@ Return ONLY a JSON object:
             overall_feedback=data.get("overall_feedback", ""),
             flag=data.get("flag", "none"),
             flag_reason=data.get("flag_reason", ""),
+        )
+
+    def _extract_json_candidate(self, text: str) -> str | None:
+        """Try to extract a JSON object from model output.
+
+        Looks for a ```json fenced block first, then falls back to taking the
+        substring between the first '{' and the last '}' if present.
+        Returns the candidate JSON string or None if nothing found.
+        """
+        m = re.search(r'```(?:json)?\s*(\{.*\})\s*```', text, re.DOTALL)
+        if m:
+            return m.group(1)
+        s = text.find('{')
+        e = text.rfind('}')
+        if s != -1 and e != -1 and e > s:
+            return text[s:e+1]
+        return None
+
+    def _build_invoke_body(self, prompt: str) -> dict:
+        """Build model-family specific Bedrock InvokeModel body."""
+        if self._is_anthropic_model():
+            return {
+                "anthropic_version": "bedrock-2023-05-31",
+                "max_tokens": self._max_tokens,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt}
+                        ],
+                    }
+                ],
+            }
+
+        if self._is_nova_model():
+            return {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"text": prompt}
+                        ],
+                    }
+                ],
+                "inferenceConfig": {
+                    "max_new_tokens": self._max_tokens,
+                },
+            }
+
+        # Conservative default for other message-based models.
+        return {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"text": prompt}
+                    ],
+                }
+            ],
+        }
+
+    def _extract_text_from_invoke_response(self, body: dict) -> str:
+        """Extract generated text from known Bedrock response formats."""
+        # Anthropic (Claude via messages API)
+        if "content" in body and isinstance(body["content"], list):
+            first = body["content"][0] if body["content"] else {}
+            if isinstance(first, dict) and "text" in first:
+                return first["text"]
+
+        # Amazon Nova / Converse-style output
+        try:
+            return body["output"]["message"]["content"][0]["text"]
+        except (KeyError, IndexError, TypeError):
+            pass
+
+        raise BedrockGradingError(
+            f"Unexpected Bedrock response format. Keys: {list(body.keys())}"
         )
 
     # ---------------------------------------------------------------------------
@@ -236,21 +380,15 @@ Return ONLY a JSON object:
 
         for attempt in range(self._MAX_RETRIES + 1):
             try:
+                request_body = self._build_invoke_body(prompt)
                 response = self._client.invoke_model(
                     modelId=self._model_id,
                     contentType="application/json",
                     accept="application/json",
-                    body=json.dumps({
-                        "anthropic_version": "bedrock-2023-05-31",
-                        "max_tokens": self._max_tokens,
-                        "messages": [
-                            {"role": "user", "content": prompt}
-                        ],
-                    }),
+                    body=json.dumps(request_body),
                 )
                 body = json.loads(response["body"].read())
-                # Claude response format
-                return body["content"][0]["text"]
+                return self._extract_text_from_invoke_response(body)
 
             except ClientError as exc:
                 error_code = exc.response["Error"]["Code"]
